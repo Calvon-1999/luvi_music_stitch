@@ -243,23 +243,69 @@ app.post('/process-videos', async (req, res) => {
     }
 });
 
+// Status check endpoint
+app.get('/status/:jobId', (req, res) => {
+    const { jobId } = req.params;
+    const status = jobStatus.get(jobId);
+    
+    if (!status) {
+        return res.status(404).json({ 
+            error: 'Job not found',
+            jobId: jobId 
+        });
+    }
+    
+    res.json({
+        jobId: jobId,
+        status: status.status,
+        progress: status.progress,
+        startTime: status.startTime,
+        completedTime: status.completedTime || null,
+        failedTime: status.failedTime || null,
+        error: status.error,
+        videoStats: status.videoStats,
+        processedVideos: status.processedVideos || null,
+        downloadUrl: status.status === STATUS.COMPLETED ? `/download/${jobId}` : null
+    });
+});
+
 // Download endpoint
 app.get('/download/:jobId', async (req, res) => {
     try {
         const { jobId } = req.params;
+        const status = jobStatus.get(jobId);
+        
+        if (!status) {
+            return res.status(404).json({ error: 'Job not found' });
+        }
+        
+        if (status.status !== STATUS.COMPLETED) {
+            return res.status(400).json({ 
+                error: `Cannot download. Job status is: ${status.status}`,
+                currentStatus: status.progress 
+            });
+        }
+        
         const filePath = path.join(OUTPUT_DIR, `final_video_${jobId}.mp4`);
         
         // Check if file exists
         await fs.access(filePath);
         
+        // Get file stats for response headers
+        const stats = await fs.stat(filePath);
+        
         res.setHeader('Content-Type', 'video/mp4');
         res.setHeader('Content-Disposition', `attachment; filename="final_video_${jobId}.mp4"`);
+        res.setHeader('Content-Length', stats.size);
         
         const fileStream = require('fs').createReadStream(filePath);
         fileStream.pipe(res);
         
     } catch (error) {
-        res.status(404).json({ error: 'Video not found' });
+        res.status(404).json({ 
+            error: 'Video file not found or not accessible',
+            details: error.message 
+        });
     }
 });
 
