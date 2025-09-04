@@ -273,19 +273,6 @@ app.get('/status/:jobId', (req, res) => {
 app.get('/download/:jobId', async (req, res) => {
     try {
         const { jobId } = req.params;
-        const status = jobStatus.get(jobId);
-        
-        if (!status) {
-            return res.status(404).json({ error: 'Job not found' });
-        }
-        
-        if (status.status !== STATUS.COMPLETED) {
-            return res.status(400).json({ 
-                error: `Cannot download. Job status is: ${status.status}`,
-                currentStatus: status.progress 
-            });
-        }
-        
         const filePath = path.join(OUTPUT_DIR, `final_video_${jobId}.mp4`);
         
         // Check if file exists
