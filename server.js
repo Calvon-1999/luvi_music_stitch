@@ -73,33 +73,68 @@ async function getVideoDuration(videoPath) {
     });
 }
 
-// Stitch videos together
-async function stitchVideos(videoPaths, outputPath) {
-    return new Promise((resolve, reject) => {
-        const command = ffmpeg();
-        
-        // Add all video inputs
-        videoPaths.forEach(videoPath => {
-            command.input(videoPath);
+// Check if video has audio stream
+async function hasAudioStream(videoPath) {
+    return new Promise((resolve) => {
+        ffmpeg.ffprobe(videoPath, (err, metadata) => {
+            if (err) {
+                resolve(false);
+            } else {
+                const hasAudio = metadata.streams.some(stream => stream.codec_type === 'audio');
+                resolve(hasAudio);
+            }
         });
+    });
+}
 
-        // Create filter complex for concatenation
-        const filterComplex = videoPaths.map((_, index) => `[${index}:v][${index}:a]`).join('') + 
-                             `concat=n=${videoPaths.length}:v=1:a=1[outv][outa]`;
+// Stitch videos together (handles videos without audio)
+async function stitchVideos(videoPaths, outputPath) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            // Check if any video has audio
+            const audioChecks = await Promise.all(videoPaths.map(hasAudioStream));
+            const hasAnyAudio = audioChecks.some(hasAudio => hasAudio);
+            
+            const command = ffmpeg();
+            
+            // Add all video inputs
+            videoPaths.forEach(videoPath => {
+                command.input(videoPath);
+            });
 
-        command
-            .complexFilter(filterComplex)
-            .outputOptions(['-map', '[outv]', '-map', '[outa]'])
-            .output(outputPath)
-            .on('end', () => {
-                console.log('Video stitching completed');
-                resolve();
-            })
-            .on('error', (err) => {
-                console.error('Video stitching error:', err);
-                reject(err);
-            })
-            .run();
+            if (hasAnyAudio) {
+                // Some videos have audio - use complex filter with audio handling
+                const filterComplex = videoPaths.map((_, index) => {
+                    return audioChecks[index] ? `[${index}:v][${index}:a]` : `[${index}:v][${index}:v]`;
+                }).join('') + `concat=n=${videoPaths.length}:v=1:a=1[outv][outa]`;
+
+                command
+                    .complexFilter(filterComplex)
+                    .outputOptions(['-map', '[outv]', '-map', '[outa]']);
+            } else {
+                // No audio in any video - video-only concatenation
+                const filterComplex = videoPaths.map((_, index) => `[${index}:v]`).join('') + 
+                                     `concat=n=${videoPaths.length}:v=1:a=0[outv]`;
+
+                command
+                    .complexFilter(filterComplex)
+                    .outputOptions(['-map', '[outv]']);
+            }
+
+            command
+                .output(outputPath)
+                .on('end', () => {
+                    console.log('Video stitching completed');
+                    resolve();
+                })
+                .on('error', (err) => {
+                    console.error('Video stitching error:', err);
+                    reject(err);
+                })
+                .run();
+        } catch (error) {
+            reject(error);
+        }
     });
 }
 
