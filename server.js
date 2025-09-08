@@ -73,55 +73,25 @@ async function getVideoDuration(videoPath) {
     });
 }
 
-// Check if video has audio stream
-async function hasAudioStream(videoPath) {
-    return new Promise((resolve) => {
-        ffmpeg.ffprobe(videoPath, (err, metadata) => {
-            if (err) {
-                resolve(false);
-            } else {
-                const hasAudio = metadata.streams.some(stream => stream.codec_type === 'audio');
-                resolve(hasAudio);
-            }
-        });
-    });
-}
-
-// Stitch videos together (handles videos without audio)
+// Stitch videos together (video-only, ignores original audio)
 async function stitchVideos(videoPaths, outputPath) {
-    return new Promise(async (resolve, reject) => {
+    return new Promise((resolve, reject) => {
         try {
-            // Check if any video has audio
-            const audioChecks = await Promise.all(videoPaths.map(hasAudioStream));
-            const hasAnyAudio = audioChecks.some(hasAudio => hasAudio);
-            
             const command = ffmpeg();
-            
+
             // Add all video inputs
             videoPaths.forEach(videoPath => {
                 command.input(videoPath);
             });
 
-            if (hasAnyAudio) {
-                // Some videos have audio - use complex filter with audio handling
-                const filterComplex = videoPaths.map((_, index) => {
-                    return audioChecks[index] ? `[${index}:v][${index}:a]` : `[${index}:v][${index}:v]`;
-                }).join('') + `concat=n=${videoPaths.length}:v=1:a=1[outv][outa]`;
-
-                command
-                    .complexFilter(filterComplex)
-                    .outputOptions(['-map', '[outv]', '-map', '[outa]']);
-            } else {
-                // No audio in any video - video-only concatenation
-                const filterComplex = videoPaths.map((_, index) => `[${index}:v]`).join('') + 
-                                     `concat=n=${videoPaths.length}:v=1:a=0[outv]`;
-
-                command
-                    .complexFilter(filterComplex)
-                    .outputOptions(['-map', '[outv]']);
-            }
+            // Build filter_complex for video-only concat
+            const filterComplex = videoPaths
+                .map((_, index) => `[${index}:v:0]`)
+                .join('') + `concat=n=${videoPaths.length}:v=1:a=0[outv]`;
 
             command
+                .complexFilter(filterComplex)
+                .outputOptions(['-map', '[outv]'])
                 .output(outputPath)
                 .on('end', () => {
                     console.log('Video stitching completed');
@@ -139,7 +109,7 @@ async function stitchVideos(videoPaths, outputPath) {
 }
 
 // Add audio to video
-async function addAudioToVideo(videoPath, audioPath, outputPath, audioDuration = 60) {
+async function addAudioToVideo(videoPath, audioPath, outputPath) {
     return new Promise((resolve, reject) => {
         ffmpeg(videoPath)
             .input(audioPath)
@@ -192,7 +162,6 @@ app.post('/process-videos', async (req, res) => {
         // Step 2: Sort videos by scene number, then download
         console.log('Step 2: Sorting and downloading videos...');
         
-        // Sort videos by scene_number to ensure correct order
         const sortedVideos = videos.sort((a, b) => {
             const sceneA = parseInt(a.scene_number, 10);
             const sceneB = parseInt(b.scene_number, 10);
@@ -260,10 +229,7 @@ app.get('/download/:jobId', async (req, res) => {
         const { jobId } = req.params;
         const filePath = path.join(OUTPUT_DIR, `final_video_${jobId}.mp4`);
         
-        // Check if file exists
         await fs.access(filePath);
-        
-        // Get file stats for response headers
         const stats = await fs.stat(filePath);
         
         res.setHeader('Content-Type', 'video/mp4');
