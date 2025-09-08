@@ -287,47 +287,91 @@ app.post('/process-videos', async (req, res) => {
             message: 'Processing audio...'
         });
 
-        // Step 1: Download and trim audio to 1 minute
+        // Step 1: Download and process audio
         console.log('Step 1: Processing audio...');
-        const audioPath = path.join(jobDir, 'audio.mp3');
+        const originalAudioPath = path.join(jobDir, 'original_audio');
+        const audioPath = path.join(jobDir, 'audio.wav');
         const trimmedAudioPath = path.join(jobDir, 'audio_trimmed.mp3');
         
         try {
-            await downloadFile(mv_audio, audioPath);
+            // Download audio file without extension first
+            await downloadFile(mv_audio, originalAudioPath);
             
-            // Try primary audio processing method
+            // Convert to a known format first, then trim
+            console.log('Converting audio to standard format...');
+            await new Promise((resolve, reject) => {
+                ffmpeg(originalAudioPath)
+                    .inputOptions(['-f', 'mp3']) // Force input format as mp3
+                    .audioCodec('pcm_s16le')
+                    .audioChannels(2)
+                    .audioFrequency(44100)
+                    .output(audioPath)
+                    .on('start', (cmd) => console.log('Audio conversion command:', cmd))
+                    .on('end', () => {
+                        console.log('Audio format conversion completed');
+                        resolve();
+                    })
+                    .on('error', (err) => {
+                        console.error('Audio conversion failed:', err);
+                        // Try without forcing input format
+                        ffmpeg(originalAudioPath)
+                            .audioCodec('pcm_s16le')
+                            .audioChannels(2)
+                            .audioFrequency(44100)
+                            .output(audioPath)
+                            .on('end', resolve)
+                            .on('error', reject)
+                            .run();
+                    })
+                    .run();
+            });
+            
+            // Now trim the converted audio
+            console.log('Trimming audio to 60 seconds...');
+            await new Promise((resolve, reject) => {
+                ffmpeg(audioPath)
+                    .setStartTime(0)
+                    .setDuration(60)
+                    .audioCodec('aac')
+                    .audioBitrate('128k')
+                    .audioChannels(2)
+                    .audioFrequency(44100)
+                    .output(trimmedAudioPath)
+                    .on('start', (cmd) => console.log('Audio trimming command:', cmd))
+                    .on('end', () => {
+                        console.log('Audio trimming completed successfully');
+                        resolve();
+                    })
+                    .on('error', (err) => {
+                        console.error('Audio trimming failed:', err);
+                        reject(new Error(`Audio trimming failed: ${err.message}`));
+                    })
+                    .run();
+            });
+            
+        } catch (error) {
+            // Final fallback: skip audio processing and create silent audio
+            console.warn('Audio processing failed completely, creating silent audio track:', error.message);
+            
             try {
-                await trimAudio(audioPath, trimmedAudioPath, 60);
-            } catch (audioError) {
-                console.warn('Primary audio processing failed, trying fallback method:', audioError.message);
-                
-                // Fallback: try with more permissive settings
                 await new Promise((resolve, reject) => {
-                    ffmpeg(audioPath)
-                        .setStartTime(0)
+                    ffmpeg()
+                        .input('anullsrc=channel_layout=stereo:sample_rate=44100')
+                        .inputOptions(['-f', 'lavfi'])
                         .setDuration(60)
                         .audioCodec('aac')
                         .audioBitrate('128k')
-                        .outputOptions([
-                            '-y', // Overwrite output file
-                            '-ar', '44100', // Sample rate
-                            '-ac', '2' // Stereo
-                        ])
                         .output(trimmedAudioPath)
-                        .on('start', (cmd) => console.log('Fallback audio command:', cmd))
                         .on('end', () => {
-                            console.log('Fallback audio processing completed');
+                            console.log('Silent audio track created as fallback');
                             resolve();
                         })
-                        .on('error', (err) => {
-                            console.error('Fallback audio processing also failed:', err);
-                            reject(new Error(`Both audio processing methods failed. Original: ${audioError.message}. Fallback: ${err.message}`));
-                        })
+                        .on('error', reject)
                         .run();
                 });
+            } catch (silentError) {
+                throw new Error(`Cannot create audio track: ${error.message}. Silent fallback also failed: ${silentError.message}`);
             }
-        } catch (error) {
-            throw new Error(`Audio processing failed: ${error.message}`);
         }
 
         updateJobStatus(jobId, STATUS.PROCESSING, 20, {
