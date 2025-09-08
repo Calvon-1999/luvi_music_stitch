@@ -66,8 +66,7 @@ async function getVideoDuration(videoPath) {
             if (err) {
                 reject(err);
             } else {
-                const duration = metadata.format.duration;
-                resolve(duration);
+                resolve(metadata.format.duration);
             }
         });
     });
@@ -84,7 +83,7 @@ async function stitchVideos(videoPaths, outputPath) {
                 command.input(videoPath);
             });
 
-            // Build filter_complex for video-only concat
+            // Build video-only concat filter
             const filterComplex = videoPaths
                 .map((_, index) => `[${index}:v:0]`)
                 .join('') + `concat=n=${videoPaths.length}:v=1:a=0[outv]`;
@@ -114,11 +113,11 @@ async function addAudioToVideo(videoPath, audioPath, outputPath) {
         ffmpeg(videoPath)
             .input(audioPath)
             .outputOptions([
-                '-c:v', 'copy',           // Copy video without re-encoding
-                '-c:a', 'aac',            // Audio codec
-                '-map', '0:v:0',          // Map video from first input
-                '-map', '1:a:0',          // Map audio from second input
-                '-shortest'               // End when shortest stream ends
+                '-c:v', 'copy',      // Copy video without re-encoding
+                '-c:a', 'aac',       // Audio codec
+                '-map', '0:v:0',     // Map video from first input
+                '-map', '1:a:0',     // Map audio from second input
+                '-shortest'          // End when shortest stream ends
             ])
             .output(outputPath)
             .on('end', () => {
@@ -151,27 +150,19 @@ app.post('/process-videos', async (req, res) => {
         const jobDir = path.join(TEMP_DIR, jobId);
         await fs.mkdir(jobDir, { recursive: true });
 
-        // Step 1: Download and trim audio to 1 minute
+        // Step 1: Download and trim audio
         console.log('Step 1: Processing audio...');
         const audioPath = path.join(jobDir, 'audio.mp3');
         const trimmedAudioPath = path.join(jobDir, 'audio_trimmed.mp3');
-        
         await downloadFile(mv_audio, audioPath);
         await trimAudio(audioPath, trimmedAudioPath, 60);
 
-        // Step 2: Sort videos by scene number, then download
+        // Step 2: Sort videos by scene number and download
         console.log('Step 2: Sorting and downloading videos...');
-        
-        const sortedVideos = videos.sort((a, b) => {
-            const sceneA = parseInt(a.scene_number, 10);
-            const sceneB = parseInt(b.scene_number, 10);
-            return sceneA - sceneB;
-        });
-
+        const sortedVideos = videos.sort((a, b) => parseInt(a.scene_number, 10) - parseInt(b.scene_number, 10));
         console.log('Video processing order:', sortedVideos.map(v => `Scene ${v.scene_number}`).join(' -> '));
 
         const videoPaths = [];
-        
         for (let i = 0; i < sortedVideos.length; i++) {
             const video = sortedVideos[i];
             const videoPath = path.join(jobDir, `video_${String(video.scene_number).padStart(3, '0')}.mp4`);
@@ -180,12 +171,12 @@ app.post('/process-videos', async (req, res) => {
             console.log(`Downloaded video ${i + 1}/${sortedVideos.length}: Scene ${video.scene_number}`);
         }
 
-        // Step 3: Stitch videos together
+        // Step 3: Stitch videos
         console.log('Step 3: Stitching videos...');
         const stitchedVideoPath = path.join(jobDir, 'stitched_video.mp4');
         await stitchVideos(videoPaths, stitchedVideoPath);
 
-        // Step 4: Add trimmed audio to stitched video
+        // Step 4: Add audio
         console.log('Step 4: Adding audio to final video...');
         const finalVideoPath = path.join(OUTPUT_DIR, `final_video_${jobId}.mp4`);
         await addAudioToVideo(stitchedVideoPath, trimmedAudioPath, finalVideoPath);
@@ -228,14 +219,13 @@ app.get('/download/:jobId', async (req, res) => {
     try {
         const { jobId } = req.params;
         const filePath = path.join(OUTPUT_DIR, `final_video_${jobId}.mp4`);
-        
         await fs.access(filePath);
         const stats = await fs.stat(filePath);
-        
+
         res.setHeader('Content-Type', 'video/mp4');
         res.setHeader('Content-Disposition', `attachment; filename="final_video_${jobId}.mp4"`);
         res.setHeader('Content-Length', stats.size);
-        
+
         const fileStream = require('fs').createReadStream(filePath);
         fileStream.pipe(res);
         
@@ -278,7 +268,6 @@ app.get('/', (req, res) => {
 // Initialize and start server
 async function startServer() {
     await ensureDirectories();
-    
     app.listen(PORT, () => {
         console.log(`Video Stitching Service running on port ${PORT}`);
         console.log(`Health check: http://localhost:${PORT}/health`);
