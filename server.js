@@ -294,7 +294,38 @@ app.post('/process-videos', async (req, res) => {
         
         try {
             await downloadFile(mv_audio, audioPath);
-            await trimAudio(audioPath, trimmedAudioPath, 60);
+            
+            // Try primary audio processing method
+            try {
+                await trimAudio(audioPath, trimmedAudioPath, 60);
+            } catch (audioError) {
+                console.warn('Primary audio processing failed, trying fallback method:', audioError.message);
+                
+                // Fallback: try with more permissive settings
+                await new Promise((resolve, reject) => {
+                    ffmpeg(audioPath)
+                        .setStartTime(0)
+                        .setDuration(60)
+                        .audioCodec('aac')
+                        .audioBitrate('128k')
+                        .outputOptions([
+                            '-y', // Overwrite output file
+                            '-ar', '44100', // Sample rate
+                            '-ac', '2' // Stereo
+                        ])
+                        .output(trimmedAudioPath)
+                        .on('start', (cmd) => console.log('Fallback audio command:', cmd))
+                        .on('end', () => {
+                            console.log('Fallback audio processing completed');
+                            resolve();
+                        })
+                        .on('error', (err) => {
+                            console.error('Fallback audio processing also failed:', err);
+                            reject(new Error(`Both audio processing methods failed. Original: ${audioError.message}. Fallback: ${err.message}`));
+                        })
+                        .run();
+                });
+            }
         } catch (error) {
             throw new Error(`Audio processing failed: ${error.message}`);
         }
