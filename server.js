@@ -267,7 +267,7 @@ app.get('/download/:jobId', async (req, res) => {
         const stats = await fs.stat(filePath);
         
         res.setHeader('Content-Type', 'video/mp4');
-        res.setHeader('Content-Disposition', `attachment; filename="final_video_${jobId}.mp4"`);
+        res.setHeader('Content-Disposition', `inline; filename="final_video_${jobId}.mp4"`); // Changed from 'attachment' to 'inline'
         res.setHeader('Content-Length', stats.size);
         
         const fileStream = require('fs').createReadStream(filePath);
