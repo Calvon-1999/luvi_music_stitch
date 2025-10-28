@@ -13,6 +13,7 @@ app.use(express.json({ limit: '50mb' }));
 // Ensure temp directories exist
 const TEMP_DIR = '/tmp';
 const OUTPUT_DIR = path.join(TEMP_DIR, 'output');
+const OUTRO_VIDEO_PATH = path.join(__dirname, 'outro', 'portrait.mp4');
 
 // Create output directory
 async function ensureDirectories() {
@@ -163,6 +164,58 @@ async function addAudioToVideo(videoPath, audioPath, outputPath, audioDuration =
     });
 }
 
+// Add outro video to the end of a video
+async function addOutroVideo(videoPath, outroPath, outputPath) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            // Check if both videos have audio
+            const mainHasAudio = await hasAudioStream(videoPath);
+            const outroHasAudio = await hasAudioStream(outroPath);
+            
+            const command = ffmpeg();
+            
+            command
+                .input(videoPath)
+                .input(outroPath);
+
+            if (mainHasAudio && outroHasAudio) {
+                // Both videos have audio
+                command
+                    .complexFilter('[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]')
+                    .outputOptions(['-map', '[outv]', '-map', '[outa]']);
+            } else if (mainHasAudio || outroHasAudio) {
+                // Only one video has audio - create silent audio for the other
+                const filterComplex = mainHasAudio 
+                    ? '[0:v][0:a][1:v]anullsrc[silent];[silent][1:v]concat=n=2:v=1:a=1[outv][outa]'
+                    : '[0:v]anullsrc[silent];[silent][0:v][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]';
+                
+                command
+                    .complexFilter(filterComplex)
+                    .outputOptions(['-map', '[outv]', '-map', '[outa]']);
+            } else {
+                // Neither video has audio
+                command
+                    .complexFilter('[0:v][1:v]concat=n=2:v=1:a=0[outv]')
+                    .outputOptions(['-map', '[outv]']);
+            }
+
+            command
+                .output(outputPath)
+                .on('end', () => {
+                    console.log('Outro video addition completed');
+                    resolve();
+                })
+                .on('error', (err) => {
+                    console.error('Outro video addition error:', err);
+                    reject(err);
+                })
+                .run();
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
 // Main processing endpoint
 app.post('/process-videos', async (req, res) => {
     const jobId = uuidv4();
@@ -174,6 +227,20 @@ app.post('/process-videos', async (req, res) => {
         if (!videos || !Array.isArray(videos) || !mv_audio) {
             return res.status(400).json({ 
                 error: 'Invalid input. Expected videos array and mv_audio URL' 
+            });
+        }
+
+        // Check if outro video exists
+        try {
+            await fs.access(OUTRO_VIDEO_PATH);
+            console.log('Outro video found:', OUTRO_VIDEO_PATH);
+        } catch (error) {
+            console.warn('Warning: Outro video not found at', OUTRO_VIDEO_PATH);
+            return res.status(400).json({
+                success: false,
+                error: 'Outro video file not found',
+                expectedPath: OUTRO_VIDEO_PATH,
+                message: 'Please ensure portrait.mp4 exists in the outro folder'
             });
         }
 
@@ -217,11 +284,16 @@ app.post('/process-videos', async (req, res) => {
         await stitchVideos(videoPaths, stitchedVideoPath);
 
         // Step 4: Add trimmed audio to stitched video
-        console.log('Step 4: Adding audio to final video...');
-        const finalVideoPath = path.join(OUTPUT_DIR, `final_video_${jobId}.mp4`);
-        await addAudioToVideo(stitchedVideoPath, trimmedAudioPath, finalVideoPath);
+        console.log('Step 4: Adding audio to stitched video...');
+        const videoWithAudioPath = path.join(jobDir, 'video_with_audio.mp4');
+        await addAudioToVideo(stitchedVideoPath, trimmedAudioPath, videoWithAudioPath);
 
-        // Step 5: Get final video stats
+        // Step 5: Add outro video at the end
+        console.log('Step 5: Adding outro video...');
+        const finalVideoPath = path.join(OUTPUT_DIR, `final_video_${jobId}.mp4`);
+        await addOutroVideo(videoWithAudioPath, OUTRO_VIDEO_PATH, finalVideoPath);
+
+        // Step 6: Get final video stats
         const finalDuration = await getVideoDuration(finalVideoPath);
         const stats = await fs.stat(finalVideoPath);
 
@@ -241,7 +313,8 @@ app.post('/process-videos', async (req, res) => {
             },
             processedVideos: videos.length,
             sceneOrder: sortedVideos.map(v => parseInt(v.scene_number, 10)),
-            message: `Successfully processed ${videos.length} videos with 1-minute audio track`
+            outroAdded: true,
+            message: `Successfully processed ${videos.length} videos with 1-minute audio track and outro`
         });
 
     } catch (error) {
