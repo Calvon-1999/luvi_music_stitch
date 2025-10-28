@@ -88,7 +88,7 @@ async function hasAudioStream(videoPath) {
     });
 }
 
-// Stitch videos together (handles videos without audio)
+// Stitch videos together (handles videos without audio and different resolutions)
 async function stitchVideos(videoPaths, outputPath) {
     return new Promise(async (resolve, reject) => {
         try {
@@ -104,18 +104,31 @@ async function stitchVideos(videoPaths, outputPath) {
             });
 
             if (hasAnyAudio) {
-                // Some videos have audio - use complex filter with audio handling
-                const filterComplex = videoPaths.map((_, index) => {
-                    return audioChecks[index] ? `[${index}:v][${index}:a]` : `[${index}:v][${index}:v]`;
-                }).join('') + `concat=n=${videoPaths.length}:v=1:a=1[outv][outa]`;
+                // Some videos have audio - normalize resolution and framerate, then concat
+                const scaleAndPadFilters = videoPaths.map((_, index) => {
+                    return `[${index}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v${index}]`;
+                }).join(';');
+                
+                const audioFilters = videoPaths.map((_, index) => {
+                    return audioChecks[index] ? `[${index}:a]` : `anullsrc=r=44100:cl=stereo[a${index}]`;
+                }).join(';');
+                
+                const concatInputs = videoPaths.map((_, index) => `[v${index}][a${index}]`).join('');
+                
+                const filterComplex = scaleAndPadFilters + ';' + audioFilters + ';' + 
+                                     concatInputs + `concat=n=${videoPaths.length}:v=1:a=1[outv][outa]`;
 
                 command
                     .complexFilter(filterComplex)
                     .outputOptions(['-map', '[outv]', '-map', '[outa]']);
             } else {
-                // No audio in any video - video-only concatenation
-                const filterComplex = videoPaths.map((_, index) => `[${index}:v]`).join('') + 
-                                     `concat=n=${videoPaths.length}:v=1:a=0[outv]`;
+                // No audio in any video - normalize resolution and framerate
+                const scaleAndPadFilters = videoPaths.map((_, index) => {
+                    return `[${index}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v${index}]`;
+                }).join(';');
+                
+                const concatInputs = videoPaths.map((_, index) => `[v${index}]`).join('');
+                const filterComplex = scaleAndPadFilters + ';' + concatInputs + `concat=n=${videoPaths.length}:v=1:a=0[outv]`;
 
                 command
                     .complexFilter(filterComplex)
@@ -164,7 +177,7 @@ async function addAudioToVideo(videoPath, audioPath, outputPath, audioDuration =
     });
 }
 
-// Add outro video to the end of a video
+// Add outro video to the end of a video (with normalization)
 async function addOutroVideo(videoPath, outroPath, outputPath) {
     return new Promise(async (resolve, reject) => {
         try {
@@ -179,23 +192,47 @@ async function addOutroVideo(videoPath, outroPath, outputPath) {
                 .input(outroPath);
 
             if (mainHasAudio && outroHasAudio) {
-                // Both videos have audio
-                command
-                    .complexFilter('[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]')
-                    .outputOptions(['-map', '[outv]', '-map', '[outa]']);
-            } else if (mainHasAudio || outroHasAudio) {
-                // Only one video has audio - create silent audio for the other
-                const filterComplex = mainHasAudio 
-                    ? '[0:v][0:a][1:v]anullsrc[silent];[silent][1:v]concat=n=2:v=1:a=1[outv][outa]'
-                    : '[0:v]anullsrc[silent];[silent][0:v][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]';
+                // Both videos have audio - normalize and concat
+                const filterComplex = 
+                    `[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v0];` +
+                    `[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v1];` +
+                    `[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[outv][outa]`;
                 
                 command
                     .complexFilter(filterComplex)
                     .outputOptions(['-map', '[outv]', '-map', '[outa]']);
+            } else if (mainHasAudio || outroHasAudio) {
+                // Only one video has audio - create silent audio for the other
+                if (mainHasAudio) {
+                    const filterComplex = 
+                        `[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v0];` +
+                        `[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v1];` +
+                        `anullsrc=r=44100:cl=stereo[silent];` +
+                        `[v0][0:a][v1][silent]concat=n=2:v=1:a=1[outv][outa]`;
+                    
+                    command
+                        .complexFilter(filterComplex)
+                        .outputOptions(['-map', '[outv]', '-map', '[outa]']);
+                } else {
+                    const filterComplex = 
+                        `[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v0];` +
+                        `[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v1];` +
+                        `anullsrc=r=44100:cl=stereo[silent];` +
+                        `[v0][silent][v1][1:a]concat=n=2:v=1:a=1[outv][outa]`;
+                    
+                    command
+                        .complexFilter(filterComplex)
+                        .outputOptions(['-map', '[outv]', '-map', '[outa]']);
+                }
             } else {
-                // Neither video has audio
+                // Neither video has audio - normalize and concat
+                const filterComplex = 
+                    `[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v0];` +
+                    `[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v1];` +
+                    `[v0][v1]concat=n=2:v=1:a=0[outv]`;
+                
                 command
-                    .complexFilter('[0:v][1:v]concat=n=2:v=1:a=0[outv]')
+                    .complexFilter(filterComplex)
                     .outputOptions(['-map', '[outv]']);
             }
 
@@ -340,7 +377,7 @@ app.get('/download/:jobId', async (req, res) => {
         const stats = await fs.stat(filePath);
         
         res.setHeader('Content-Type', 'video/mp4');
-        res.setHeader('Content-Disposition', `inline; filename="final_video_${jobId}.mp4"`); // Changed from 'attachment' to 'inline'
+        res.setHeader('Content-Disposition', `inline; filename="final_video_${jobId}.mp4"`);
         res.setHeader('Content-Length', stats.size);
         
         const fileStream = require('fs').createReadStream(filePath);
